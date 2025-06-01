@@ -68,7 +68,6 @@ The application uses a YAML configuration file to manage zones and discovery set
 # Fallback zones used when automatic discovery fails
 fallback_zones:
   - localhost
-  - solal.internal
   - 127.in-addr.arpa
   - local
 
@@ -77,7 +76,6 @@ test_zones:
   - localhost
   - 127.in-addr.arpa
   - local
-  - solal.internal
   - 1.168.192.in-addr.arpa
 
 # System zones to ignore during automatic discovery
@@ -113,7 +111,7 @@ discovery:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `fallback_zones` | Zones used when automatic discovery fails | `[localhost, solal.internal, ...]` |
+| `fallback_zones` | Zones used when automatic discovery fails | `[localhost, ...]` |
 | `test_zones` | Zones tested for DNS connectivity | `[localhost, 127.in-addr.arpa, ...]` |
 | `system_zones` | Zones ignored during discovery | `[localhost, bind, ...]` |
 | `max_subdomains` | Maximum subdomains to test during discovery | `50` |
@@ -152,7 +150,6 @@ The application expects the following directory structure on your BIND server:
 ├── zone/
 │   ├── direct/          # Forward DNS zones
 │   │   ├── db.example.com
-│   │   ├── db.solal.internal
 │   │   └── ...
 │   └── reverse/         # Reverse DNS zones
 │       ├── db.1.168.192.in-addr.arpa
@@ -207,90 +204,9 @@ services:
 
 Run with: `docker-compose up -d`
 
-### 3. Kubernetes (K3s) Deployment
 
-#### Deployment Manifest
 
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: custom-dns-viewer
-  namespace: dns-management
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: custom-dns-viewer
-  template:
-    metadata:
-      labels:
-        app: custom-dns-viewer
-    spec:
-      containers:
-      - name: dns-viewer
-        image: custom-dns-viewer:latest
-        ports:
-        - containerPort: 8080
-        volumeMounts:
-        - name: config
-          mountPath: /app/zones_config.yaml
-          subPath: zones_config.yaml
-      volumes:
-      - name: config
-        configMap:
-          name: dns-viewer-config
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: custom-dns-viewer-service
-spec:
-  selector:
-    app: custom-dns-viewer
-  ports:
-  - port: 80
-    targetPort: 8080
-  type: ClusterIP
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: custom-dns-viewer-ingress
-  annotations:
-    kubernetes.io/ingress.class: traefik
-spec:
-  rules:
-  - host: dns.solal.internal
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: custom-dns-viewer-service
-            port:
-              number: 80
-```
-
-#### Deploy to K3s
-
-```bash
-# Create namespace
-kubectl create namespace dns-management
-
-# Create ConfigMap for configuration
-kubectl create configmap dns-viewer-config \
-  --from-file=zones_config.yaml \
-  -n dns-management
-
-# Apply deployment
-kubectl apply -f k8s-deployment.yaml -n dns-management
-```
-
-Access at: `https://dns.solal.internal`
-
-### 4. Production Deployment
+### 3. Production Deployment
 
 For production environments, consider:
 

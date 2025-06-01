@@ -5,7 +5,6 @@
 # Fallback zones used when automatic discovery fails
 fallback_zones:
   - localhost
-  - solal.internal
   - 127.in-addr.arpa
   - local
 
@@ -14,7 +13,6 @@ test_zones:
   - localhost
   - 127.in-addr.arpa
   - local
-  - solal.internal
   - 1.168.192.in-addr.arpa
 
 # System zones to ignore during automatic discovery
