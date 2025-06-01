@@ -1,6 +1,10 @@
+**WARNING ! This project is in test phase. Its highly unsecure to deploy it on production environment. Try it on your local infrastructure.**
+
 # Custom DNS Viewer
 
 A modern, web-based DNS BIND zone management interface built with Flask. This application provides an intuitive way to view, manage, and edit DNS records for BIND DNS servers with SSH connectivity and automatic zone discovery.
+
+**-> The project is currently only in french. Adding a custom language pack is in our priority.**
 
 ## 🚀 Features
 
