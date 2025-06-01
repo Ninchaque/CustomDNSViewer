@@ -161,11 +161,13 @@ The application expects the following directory structure on your BIND server:
 └── named.conf.local     # BIND configuration (optional scanning)
 ```
 
+**Currently working on a implementation of a custom path in the config file**
+
 ## 🚢 Deployment Options
 
-### 1. Local Development
+Now, the listening port is 8080. We are working on a custom port implementation
 
-Perfect for development and testing:
+### 1. Local Development
 
 ```bash
 python app.py
