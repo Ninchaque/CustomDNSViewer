@@ -3,7 +3,7 @@
 # Script de déploiement pour DNS Manager sur K3s
 set -e
 
-# Variables de configuration
+
 NAMESPACE="dns-manager"
 RELEASE_NAME="dns-manager"
 IMAGE_NAME="dns-manager"
