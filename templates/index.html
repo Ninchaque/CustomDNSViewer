@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestionnaire DNS BIND - 192.168.1.201</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1><i class="fas fa-network-wired"></i> Gestionnaire DNS BIND</h1>
+                <p class="server-info">Serveur DNS : <span class="server-ip">192.168.1.201</span></p>
+            </div>
+        </header>
+
+        <div class="controls-section">
+            <div class="control-group">
+                <label for="zoneSelect">
+                    <i class="fas fa-globe"></i> Zone DNS :
+                </label>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <select id="zoneSelect" class="form-select" style="flex: 1;">
+                        <option value="">-- Sélectionner une zone --</option>
+                        {% for zone in zones %}
+                        <option value="{{ zone }}">{{ zone }}</option>
+                        {% endfor %}
+                    </select>
+                    <button id="refreshZones" class="btn btn-secondary" title="Découvrir automatiquement les zones via SSH (ou méthode standard en fallback)">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label for="typeSelect">
+                    <i class="fas fa-filter"></i> Type d'enregistrements :
+                </label>
+                <select id="typeSelect" class="form-select">
+                    <option value="all">Tous les enregistrements</option>
+                    <option value="direct">Enregistrements directs (A, AAAA, CNAME)</option>
+                    <option value="inverse">Enregistrements inverses (PTR)</option>
+                    <option value="special">Enregistrements spéciaux (MX, NS, SOA, TXT, etc.)</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label>&nbsp;</label>
+                <button id="loadRecords" class="btn btn-primary" disabled>
+                    <i class="fas fa-search"></i> Charger les enregistrements
+                </button>
+            </div>
+
+            <div class="control-group">
+                <label>&nbsp;</label>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <a href="{{ url_for('add_record_form') }}" class="btn btn-success">
+                        <i class="fas fa-plus"></i> Ajouter un enregistrement
+                    </a>
+                    <a href="{{ url_for('ssh_config_form') }}" class="btn {% if ssh_configured %}btn-warning{% else %}btn-danger{% endif %}">
+                        <i class="fas fa-server"></i> {% if ssh_configured %}SSH Configuré{% else %}Configurer SSH{% endif %}
+                    </a>
+                </div>
+                {% if ssh_configured %}
+                <div class="ssh-status">
+                    <i class="fas fa-check-circle text-success"></i>
+                    <small>Connexion SSH active</small>
+                </div>
+                {% else %}
+                <div class="ssh-status">
+                    <i class="fas fa-exclamation-triangle text-warning"></i>
+                    <small>SSH non configuré</small>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        {% if error %}
+        <div class="error-panel">
+            <div class="error-content">
+                <i class="fas fa-exclamation-triangle"></i>
+                <div>
+                    <strong>Erreur de connexion</strong><br>
+                    {{ error }}
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Loading indicator -->
+        <div id="loadingSection" class="loading" style="display: none;">
+            <div class="loading-spinner"></div>
+            <p id="loadingMessage">Chargement des enregistrements DNS...</p>
+        </div>
+
+        <!-- Résultats -->
+        <div id="resultsSection" style="display: none;">
+            <div class="results-section">
+                <div class="results-header">
+                    <h2>
+                        <i class="fas fa-list"></i>
+                        Enregistrements DNS
+                        <span id="zoneDisplay"></span>
+                    </h2>
+                    <div class="results-stats" id="recordsStats">
+                        <!-- Dynamic stats -->
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <table class="records-table" id="recordsTable">
+                        <thead>
+                            <tr>
+                                <th><i class="fas fa-tag"></i> Nom</th>
+                                <th><i class="fas fa-cog"></i> Type</th>
+                                <th><i class="fas fa-database"></i> Valeur</th>
+                                <th><i class="fas fa-clock"></i> TTL</th>
+                                <th><i class="fas fa-tools"></i> Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recordsTableBody">
+                            <!-- Dynamic content -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>&copy; 2025 Gestionnaire DNS BIND - Interface Web Flask</p>
+        </footer>
+    </div>
+
+    <script>
+        // Variable globale pour l'instance DNSManager
+        let dnsManager;
+
+        class DNSManager {
+            constructor() {
+                this.currentRecords = [];
+                this.zones = [];
+                this.initializeEventListeners();
+                this.loadInitialData();
+            }
+
+            initializeEventListeners() {
+                document.getElementById('loadRecords').addEventListener('click', () => {
+                    this.loadRecords();
+                });
+
+                document.getElementById('refreshZones').addEventListener('click', () => {
+                    this.refreshZones();
+                });
+
+                // Enable/disable search button based on zone selection
+                document.getElementById('zoneSelect').addEventListener('change', function() {
+                    const searchBtn = document.getElementById('loadRecords');
+                    searchBtn.disabled = !this.value;
+                });
+
+                // Auto-load sur Enter
+                document.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter' && document.getElementById('zoneSelect').value) {
+                        this.loadRecords();
+                    }
+                });
+            }
+
+            loadInitialData() {
+                // Charger les zones au démarrage si pas déjà fait
+                const zoneSelect = document.getElementById('zoneSelect');
+                if (zoneSelect.options.length <= 1) {
+                    this.refreshZones().then(() => {
+                        this.handleUrlParameters();
+                    });
+                } else {
+                    this.handleUrlParameters();
+                }
+            }
+
+            handleUrlParameters() {
+                // Traiter les paramètres URL
+                const urlParams = new URLSearchParams(window.location.search);
+                const zoneParam = urlParams.get('zone');
+                const messageParam = urlParams.get('message');
+
+                // Pré-sélectionner la zone si spécifiée
+                if (zoneParam) {
+                    const zoneSelect = document.getElementById('zoneSelect');
+                    const option = Array.from(zoneSelect.options).find(opt => opt.value === zoneParam);
+                    if (option) {
+                        zoneSelect.value = zoneParam;
+                        // Activer le bouton de chargement
+                        const loadBtn = document.getElementById('loadRecords');
+                        loadBtn.disabled = false;
+                        
+                        // Auto-charger les enregistrements après un court délai
+                        setTimeout(() => {
+                            this.loadRecords();
+                        }, 500);
+                    }
+                }
+
+                // Afficher un message de succès si approprié
+                if (messageParam === 'record_added') {
+                    this.showMessage('✅ Enregistrement ajouté avec succès ! Les données ont été rechargées.', 'success');
+                }
+
+                // Nettoyer l'URL
+                if (zoneParam || messageParam) {
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                }
+            }
+
+            async refreshZones() {
+                const refreshBtn = document.getElementById('refreshZones');
+                const originalHTML = refreshBtn.innerHTML;
+
+                try {
+                    refreshBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                    refreshBtn.disabled = true;
+
+                    // D'abord essayer la découverte automatique via SSH
+                    let zones = [];
+                    let discoveryMethod = 'standard';
+                    let successMessage = 'Zones actualisées avec succès';
+
+                    try {
+                        const sshResponse = await fetch('/api/zones/refresh', {
+                            method: 'POST'
+                        });
+                        
+                        if (sshResponse.ok) {
+                            const sshData = await sshResponse.json();
+                            if (sshData.success && sshData.zones) {
+                                zones = sshData.zones;
+                                discoveryMethod = sshData.discovery_method;
+                                successMessage = sshData.message || successMessage;
+                                console.log('Découverte automatique réussie:', sshData);
+                            } else {
+                                console.warn('Découverte automatique échouée:', sshData.error);
+                            }
+                        } else {
+                            throw new Error('Erreur HTTP lors de la découverte automatique');
+                        }
+                    } catch (sshError) {
+                        console.log('Fallback vers la méthode standard:', sshError.message);
+                        
+                        // Fallback vers la méthode standard
+                        const standardResponse = await fetch('/api/zones');
+                        if (standardResponse.ok) {
+                            const standardData = await standardResponse.json();
+                            if (standardData.success) {
+                                zones = standardData.zones;
+                                successMessage = 'Zones chargées (méthode standard)';
+                            }
+                        }
+                    }
+
+                    // Mettre à jour le sélecteur de zones
+                    if (zones && zones.length > 0) {
+                        const zoneSelect = document.getElementById('zoneSelect');
+                        const currentValue = zoneSelect.value;
+                        
+                        // Vider les options existantes sauf la première
+                        zoneSelect.innerHTML = '<option value="">-- Sélectionner une zone --</option>';
+                        
+                        zones.forEach(zone => {
+                            const option = document.createElement('option');
+                            option.value = zone;
+                            option.textContent = zone;
+                            if (zone === currentValue) {
+                                option.selected = true;
+                            }
+                            zoneSelect.appendChild(option);
+                        });
+
+                        this.zones = zones;
+                        
+                        // Afficher un message approprié selon la méthode utilisée
+                        if (discoveryMethod === 'ssh_automatic') {
+                            this.showMessage(`🔍 ${successMessage} (découverte automatique SSH)`, 'success');
+                        } else if (discoveryMethod === 'fallback') {
+                            this.showMessage(`⚠️ ${successMessage}`, 'warning');
+                        } else {
+                            this.showMessage(successMessage, 'success');
+                        }
+
+                        // Enable/disable load button based on selection
+                        const loadBtn = document.getElementById('loadRecords');
+                        loadBtn.disabled = !zoneSelect.value;
+
+                        return zones; // Retourner les zones pour la Promise
+
+                    } else {
+                        this.showError('Aucune zone trouvée');
+                        return [];
+                    }
+
+                } catch (error) {
+                    console.error('Erreur lors de l\'actualisation des zones:', error);
+                    this.showError('Erreur lors de l\'actualisation des zones: ' + error.message);
+                    return [];
+                } finally {
+                    refreshBtn.innerHTML = originalHTML;
+                    refreshBtn.disabled = false;
+                }
+            }
+
+            async loadRecords() {
+                const zone = document.getElementById('zoneSelect').value;
+                const type = document.getElementById('typeSelect').value;
+
+                if (!zone) {
+                    this.showError('Veuillez sélectionner une zone DNS');
+                    return;
+                }
+
+                this.showLoading(true);
+
+                try {
+                    const response = await fetch(`/api/records?zone=${encodeURIComponent(zone)}&type=${encodeURIComponent(type)}`);
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    
+                    if (data.success && data.records) {
+                        this.showMessage(`${data.records.length} enregistrements chargés pour ${zone}`, 'success');
+                        this.displayRecords(data.records, zone, type);
+                        // Stocker les enregistrements pour les actions d'édition/suppression
+                        this.currentRecords = data.records;
+                    } else {
+                        this.showError(data.error || 'Erreur lors du chargement des enregistrements');
+                    }
+                } catch (error) {
+                    this.showError('Erreur lors du chargement des enregistrements: ' + error.message);
+                } finally {
+                    this.showLoading(false);
+                }
+            }
+
+            displayRecords(records, zone, type) {
+                const tableBody = document.getElementById('recordsTableBody');
+                const resultsSection = document.getElementById('resultsSection');
+                const statsDiv = document.getElementById('recordsStats');
+                const zoneDisplay = document.getElementById('zoneDisplay');
+
+                // Vider le tableau
+                tableBody.innerHTML = '';
+                
+                // Mettre à jour l'affichage de la zone
+                if (zoneDisplay) {
+                    zoneDisplay.textContent = ` - ${zone}`;
+                }
+
+                if (records.length === 0) {
+                    tableBody.innerHTML = `
+                        <tr>
+                            <td colspan="5" class="no-records">
+                                <i class="fas fa-info-circle"></i>
+                                Aucun enregistrement trouvé pour cette zone et ce type
+                            </td>
+                        </tr>
+                    `;
+                } else {
+                    // Trier les enregistrements par type puis par nom
+                    records.sort((a, b) => {
+                        if (a.type !== b.type) {
+                            return a.type.localeCompare(b.type);
+                        }
+                        return (a.name || '').localeCompare(b.name || '');
+                    });
+
+                    records.forEach((record, index) => {
+                        const row = document.createElement('tr');
+                        row.className = index % 2 === 0 ? 'row-even' : 'row-odd';
+                        
+                        row.innerHTML = `
+                            <td class="name-cell" title="${record.name || '@'}">${this.truncateText(record.name || '@', 30)}</td>
+                            <td class="type-cell">
+                                <span class="record-type ${record.type.toLowerCase()}">${record.type}</span>
+                            </td>
+                            <td class="value-cell" title="${record.value}">${this.truncateText(record.value, 50)}</td>
+                            <td class="ttl-cell">${record.ttl || 'N/A'}</td>
+                            <td class="actions-cell">
+                                <button class="btn-action btn-edit" data-index="${index}" title="Modifier">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button class="btn-action btn-delete" data-index="${index}" title="Supprimer">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </td>
+                        `;
+                        
+                        tableBody.appendChild(row);
+
+                        // Ajouter les événements aux boutons d'action
+                        const editBtn = row.querySelector('.btn-edit');
+                        const deleteBtn = row.querySelector('.btn-delete');
+                        
+                        editBtn.addEventListener('click', () => {
+                            this.editRecord(index);
+                        });
+                        
+                        deleteBtn.addEventListener('click', () => {
+                            this.deleteRecord(index);
+                        });
+                    });
+                }
+
+                // Mettre à jour les statistiques
+                const typeText = type === 'all' ? 'tous types' :
+                               type === 'direct' ? 'enregistrements directs' :
+                               type === 'inverse' ? 'enregistrements inverses' :
+                               'enregistrements spéciaux';
+
+                statsDiv.innerHTML = `
+                    <span class="stat-item">
+                        <strong>${records.length}</strong> enregistrements
+                    </span>
+                    <span class="stat-item">
+                        Zone: <strong>${zone}</strong>
+                    </span>
+                    <span class="stat-item">
+                        Filtre: <strong>${typeText}</strong>
+                    </span>
+                `;
+
+                // Afficher la section des résultats
+                resultsSection.style.display = 'block';
+                
+                // Scroll vers les résultats
+                resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+
+            truncateText(text, maxLength) {
+                if (!text) return '';
+                if (text.length <= maxLength) return text;
+                return text.substring(0, maxLength) + '...';
+            }
+
+            showLoading(show) {
+                document.getElementById('loadingSection').style.display = show ? 'flex' : 'none';
+            }
+
+            showError(message) {
+                this.showMessage(message, 'error');
+            }
+
+            showMessage(message, type = 'info') {
+                // Créer une notification temporaire
+                const notification = document.createElement('div');
+                notification.className = `notification notification-${type}`;
+                
+                // Choisir l'icône appropriée selon le type
+                let iconClass = 'info-circle'; // icône par défaut
+                if (type === 'success') {
+                    iconClass = 'check-circle';
+                } else if (type === 'warning') {
+                    iconClass = 'exclamation-triangle';
+                } else if (type === 'error') {
+                    iconClass = 'exclamation-circle';
+                }
+                
+                notification.innerHTML = `
+                    <i class="fas fa-${iconClass}"></i>
+                    <span>${message}</span>
+                `;
+                
+                document.body.appendChild(notification);
+                
+                // Animation d'entrée
+                setTimeout(() => {
+                    notification.classList.add('show');
+                }, 100);
+
+                // Auto-hide après 5 secondes
+                setTimeout(() => {
+                    notification.classList.remove('show');
+                    setTimeout(() => {
+                        if (document.body.contains(notification)) {
+                            document.body.removeChild(notification);
+                        }
+                    }, 300);
+                }, 5000);
+            }
+
+            async deleteRecord(index) {
+                const record = this.currentRecords[index];
+                
+                if (!record) {
+                    this.showError('Enregistrement non trouvé');
+                    return;
+                }
+
+                // Créer et afficher la modale d'édition
+                if (!confirm(`Êtes-vous sûr de vouloir supprimer cet enregistrement ?\n\nNom: ${record.name || '@'}\nType: ${record.type}\nValeur: ${record.value}`)) {
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/delete-record', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            zone: document.getElementById('zoneSelect').value,
+                            name: record.name,
+                            type: record.type,
+                            value: record.value
+                        })
+                    });
+
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        this.showMessage('Enregistrement supprimé avec succès', 'success');
+                        // Recharger les enregistrements
+                        this.loadRecords();
+                    } else {
+                        this.showError(data.message || 'Erreur lors de la suppression');
+                    }
+                } catch (error) {
+                    this.showError('Erreur lors de la suppression: ' + error.message);
+                }
+            }
+
+            editRecord(index) {
+                const record = this.currentRecords[index];
+                
+                if (!record) {
+                    this.showError('Enregistrement non trouvé');
+                    return;
+                }
+
+                // Créer la modale d'édition
+                const modal = document.createElement('div');
+                modal.className = 'modal-overlay';
+                modal.innerHTML = `
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h3><i class="fas fa-edit"></i> Modifier l'enregistrement DNS</h3>
+                            <button class="modal-close">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <form id="editRecordForm">
+                                <div class="form-group">
+                                    <label for="editName">Nom:</label>
+                                    <input type="text" id="editName" class="form-input" value="${record.name || ''}" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="editType">Type:</label>
+                                    <select id="editType" class="form-select" required>
+                                        <option value="A" ${record.type === 'A' ? 'selected' : ''}>A - Adresse IPv4</option>
+                                        <option value="AAAA" ${record.type === 'AAAA' ? 'selected' : ''}>AAAA - Adresse IPv6</option>
+                                        <option value="CNAME" ${record.type === 'CNAME' ? 'selected' : ''}>CNAME - Nom canonique</option>
+                                        <option value="MX" ${record.type === 'MX' ? 'selected' : ''}>MX - Serveur de messagerie</option>
+                                        <option value="NS" ${record.type === 'NS' ? 'selected' : ''}>NS - Serveur de noms</option>
+                                        <option value="PTR" ${record.type === 'PTR' ? 'selected' : ''}>PTR - Résolution inverse</option>
+                                        <option value="TXT" ${record.type === 'TXT' ? 'selected' : ''}>TXT - Texte</option>
+                                        <option value="SRV" ${record.type === 'SRV' ? 'selected' : ''}>SRV - Service</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="editValue">Valeur:</label>
+                                    <input type="text" id="editValue" class="form-input" value="${record.value || ''}" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="editTTL">TTL:</label>
+                                    <input type="number" id="editTTL" class="form-input" value="${record.ttl || 3600}" min="60" max="86400" required>
+                                </div>
+                            </form>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary modal-cancel">Annuler</button>
+                            <button type="button" class="btn btn-primary modal-save">Sauvegarder</button>
+                        </div>
+                    </div>
+                `;
+
+                document.body.appendChild(modal);
+                setTimeout(() => modal.classList.add('show'), 10);
+
+                // Gestionnaire d'événement pour le formulaire d'édition
+                const closeModal = () => {
+                    modal.classList.remove('show');
+                    setTimeout(() => document.body.removeChild(modal), 300);
+                };
+
+                modal.querySelector('.modal-close').addEventListener('click', closeModal);
+                modal.querySelector('.modal-cancel').addEventListener('click', closeModal);
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) closeModal();
+                });
+
+                modal.querySelector('.modal-save').addEventListener('click', async () => {
+                    try {
+                        const updatedRecord = {
+                            name: document.getElementById('editName').value,
+                            type: document.getElementById('editType').value,
+                            value: document.getElementById('editValue').value,
+                            ttl: parseInt(document.getElementById('editTTL').value)
+                        };
+
+                        const response = await fetch('/api/update-record', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                zone: document.getElementById('zoneSelect').value,
+                                original: record,
+                                updated: updatedRecord
+                            })
+                        });
+
+                        const data = await response.json();
+                        
+                        if (data.success) {
+                            this.showMessage('Enregistrement modifié avec succès', 'success');
+                            closeModal();
+                            this.loadRecords();
+                        } else {
+                            this.showError(data.message || 'Erreur lors de la modification');
+                        }
+                    } catch (error) {
+                        this.showError('Erreur lors de la modification: ' + error.message);
+                    }
+                });
+            }
+        }
+
+        // Initialiser l'application au chargement de la page
+        document.addEventListener('DOMContentLoaded', () => {
+            dnsManager = new DNSManager();
+        });
+    </script>
+</body>
+</html>
